@@ -6,14 +6,13 @@ use std::slice;
 use windows::Win32::Media::Audio::{
     AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
     AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioClient,
-    IAudioRenderClient, IMMDevice, WAVEFORMATEX,
+    IAudioRenderClient, IMMDevice,
 };
-use windows::Win32::Media::Multimedia::WAVE_FORMAT_IEEE_FLOAT;
 use windows::Win32::System::Com::CLSCTX_ALL;
 use windows::core::Result;
 
+use crate::capture::{HNS_PER_SECOND, float_format};
 use crate::event::Event;
-use crate::loopback::HNS_PER_SECOND;
 
 pub const CHANNELS: usize = 2;
 
@@ -29,17 +28,7 @@ impl Output {
     /// at a different rate, Windows converts for us (AUTOCONVERTPCM), with
     /// proper filtering (SRC_DEFAULT_QUALITY) so it doesn't sound harsh.
     pub fn new(device: &IMMDevice, sample_rate: u32) -> Result<Self> {
-        let block_align = (CHANNELS * size_of::<f32>()) as u16;
-        let format = WAVEFORMATEX {
-            wFormatTag: WAVE_FORMAT_IEEE_FLOAT as u16,
-            nChannels: CHANNELS as u16,
-            nSamplesPerSec: sample_rate,
-            nAvgBytesPerSec: sample_rate * block_align as u32,
-            nBlockAlign: block_align,
-            wBitsPerSample: 32,
-            cbSize: 0,
-        };
-
+        let format = float_format(CHANNELS, sample_rate);
         unsafe {
             let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
             client.Initialize(
@@ -69,6 +58,11 @@ impl Output {
                 buffer_frames,
             })
         }
+    }
+
+    /// The most frames a single `write` can ask for.
+    pub fn buffer_frames(&self) -> usize {
+        self.buffer_frames as usize
     }
 
     pub fn start(&self) -> Result<()> {

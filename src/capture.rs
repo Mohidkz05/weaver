@@ -1,11 +1,13 @@
-//! Copying whatever Windows is playing, without rerouting it ("loopback").
+//! Recording audio: either a copy of whatever Windows is playing ("loopback"),
+//! or a real microphone.
 
 use std::slice;
 
 use windows::Win32::Media::Audio::{
-    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-    AUDCLNT_STREAMFLAGS_LOOPBACK, IAudioCaptureClient, IAudioClient, IMMDevice, WAVEFORMATEX,
-    WAVEFORMATEXTENSIBLE,
+    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
+    AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioCaptureClient, IAudioClient, IMMDevice,
+    WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
 };
 use windows::Win32::Media::KernelStreaming::WAVE_FORMAT_EXTENSIBLE;
 use windows::Win32::Media::Multimedia::{KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, WAVE_FORMAT_IEEE_FLOAT};
@@ -26,7 +28,7 @@ pub struct Format {
     pub channel_mask: u32,
 }
 
-pub struct LoopbackCapture {
+pub struct Capture {
     client: IAudioClient,
     capture: IAudioCaptureClient,
     event: Event,
@@ -35,9 +37,10 @@ pub struct LoopbackCapture {
     silence: Vec<f32>,
 }
 
-impl LoopbackCapture {
-    /// Capture a copy of everything playing on `device` (a speaker/headphone device).
-    pub fn new(device: &IMMDevice) -> Result<Self> {
+impl Capture {
+    /// Capture a copy of everything playing on `device` (a speaker/headphone
+    /// device), in the format Windows mixes it in.
+    pub fn loopback(device: &IMMDevice) -> Result<Self> {
         unsafe {
             let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
 
@@ -54,8 +57,47 @@ impl LoopbackCapture {
             );
             CoTaskMemFree(Some(format_ptr as *const _));
             init?;
-            let format = format?;
+            Self::finish(client, format?)
+        }
+    }
 
+    /// Record from a microphone, delivered at `sample_rate` whatever rate the
+    /// mic really runs at. Headset mics often run at 16 or 44.1 kHz; Windows
+    /// resamples for us (AUTOCONVERTPCM) so the mic lines up with computer
+    /// sound sample for sample.
+    pub fn mic(device: &IMMDevice, sample_rate: u32) -> Result<Self> {
+        unsafe {
+            let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
+
+            // Keep the mic's own channel count (usually 1 or 2), only change the rate.
+            let mix_ptr = client.GetMixFormat()?;
+            let channels = (*mix_ptr).nChannels as usize;
+            CoTaskMemFree(Some(mix_ptr as *const _));
+
+            let format = float_format(channels, sample_rate);
+            client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                    | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                    | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                HNS_PER_SECOND / 10,
+                0,
+                &format,
+                None,
+            )?;
+            Self::finish(
+                client,
+                Format {
+                    channels,
+                    sample_rate,
+                    channel_mask: default_mask(channels),
+                },
+            )
+        }
+    }
+
+    unsafe fn finish(client: IAudioClient, format: Format) -> Result<Self> {
+        unsafe {
             let event = Event::new()?;
             client.SetEventHandle(event.handle())?;
             let capture: IAudioCaptureClient = client.GetService()?;
@@ -78,7 +120,7 @@ impl LoopbackCapture {
     }
 
     /// Sleep until Windows has new audio for us (or `timeout_ms` passes,
-    /// which is normal: when nothing is playing, loopback delivers nothing).
+    /// which is normal for loopback: when nothing is playing, it delivers nothing).
     pub fn wait(&self, timeout_ms: u32) {
         self.event.wait(timeout_ms);
     }
@@ -110,11 +152,25 @@ impl LoopbackCapture {
     }
 }
 
-impl Drop for LoopbackCapture {
+impl Drop for Capture {
     fn drop(&mut self) {
         unsafe {
             let _ = self.client.Stop();
         }
+    }
+}
+
+/// Plain interleaved 32-bit float at the given layout and rate.
+pub fn float_format(channels: usize, sample_rate: u32) -> WAVEFORMATEX {
+    let block_align = (channels * size_of::<f32>()) as u16;
+    WAVEFORMATEX {
+        wFormatTag: WAVE_FORMAT_IEEE_FLOAT as u16,
+        nChannels: channels as u16,
+        nSamplesPerSec: sample_rate,
+        nAvgBytesPerSec: sample_rate * block_align as u32,
+        nBlockAlign: block_align,
+        wBitsPerSample: 32,
+        cbSize: 0,
     }
 }
 

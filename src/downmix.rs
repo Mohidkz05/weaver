@@ -27,11 +27,15 @@ pub struct Downmix {
 impl Downmix {
     pub fn new(channels: usize, channel_mask: u32) -> Self {
         if channels == 1 {
-            return Self { gains: vec![(1.0, 1.0)] };
+            return Self {
+                gains: vec![(1.0, 1.0)],
+            };
         }
 
         // Walk the set bits of the mask in order: the n-th set bit is channel n.
-        let mut speakers = (0..32).map(|bit| 1u32 << bit).filter(|s| channel_mask & s != 0);
+        let mut speakers = (0..32)
+            .map(|bit| 1u32 << bit)
+            .filter(|s| channel_mask & s != 0);
         let gains = (0..channels)
             .map(|_| match speakers.next() {
                 Some(FRONT_LEFT | FRONT_LEFT_OF_CENTER) => (1.0, 0.0),
@@ -80,7 +84,9 @@ mod tests {
         // Order: FL FR FC LFE BL BR SL SR
         let mix = Downmix::new(8, 0x63F);
         let mut got = vec![];
-        mix.process(&[1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], |l, r| got.push((l, r)));
+        mix.process(&[1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], |l, r| {
+            got.push((l, r))
+        });
         let (l, r) = got[0];
         assert_eq!(l, 1.0); // front left only; the subwoofer is dropped
         assert!((r - HALF_POWER).abs() < 1e-6); // side right, at -3 dB

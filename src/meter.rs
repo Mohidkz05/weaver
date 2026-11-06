@@ -7,23 +7,26 @@ const FLOOR_DB: f32 = -60.0;
 /// How fast the bar falls after a loud sound, in decibels per second.
 /// Rising is instant, so short peaks are never missed.
 const FALL_DB_PER_SEC: f32 = 30.0;
-const BAR_WIDTH: usize = 24;
+const BAR_WIDTH: usize = 12;
 
 pub struct Meter {
+    /// One label per bar, like "L" and "R".
+    labels: &'static [&'static str],
     /// What each bar currently shows, in dB, after the fall-off is applied.
     shown_db: Vec<f32>,
     last_render: Instant,
 }
 
 impl Meter {
-    pub fn new(channels: usize) -> Self {
+    pub fn new(labels: &'static [&'static str]) -> Self {
         Self {
-            shown_db: vec![FLOOR_DB; channels],
+            labels,
+            shown_db: vec![FLOOR_DB; labels.len()],
             last_render: Instant::now(),
         }
     }
 
-    /// Draw one line of bars from the loudest sample per channel (0.0 to 1.0+)
+    /// Draw one bar per label from the loudest sample for each (0.0 to 1.0+)
     /// seen since the last call.
     pub fn render(&mut self, peaks: &[f32]) -> String {
         let now = Instant::now();
@@ -31,7 +34,7 @@ impl Meter {
         self.last_render = now;
 
         let mut line = String::new();
-        for (ch, (shown_db, &peak)) in self.shown_db.iter_mut().zip(peaks).enumerate() {
+        for ((shown_db, &peak), label) in self.shown_db.iter_mut().zip(peaks).zip(self.labels) {
             let fallen = *shown_db - FALL_DB_PER_SEC * dt;
             let shown = to_db(peak).max(fallen).max(FLOOR_DB);
             *shown_db = shown;
@@ -41,7 +44,7 @@ impl Meter {
             let clip = if shown >= 0.0 { "CLIP" } else { "    " };
             line.push_str(&format!(
                 "{} [{}{}] {:>6.1} dB {} ",
-                if ch == 0 { "L" } else { "R" },
+                label,
                 "#".repeat(filled),
                 "-".repeat(BAR_WIDTH - filled),
                 shown,
